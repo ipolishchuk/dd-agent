@@ -1,5 +1,6 @@
 # stdlib
 from datetime import datetime
+import os.path
 import socket
 import ssl
 import time
@@ -13,17 +14,29 @@ from checks.network_checks import NetworkCheck, Status, EventType
 from util import headers as agent_headers
 
 
-LINUX_CA_CERTS = '/etc/ssl/certs/ca-certificates.crt'
+def get_ca_certs_path():
+    """
+    Get a path to the trusted certificates of the system
+    """
+    CA_CERTS = [
+        '/opt/datadog-agent/embedded/ssl/certs/cacert.pem',
+        '/opt/datadog-agent/embedded/lib/python2.7/site-packages/tornado/ca-certificates.crt',
+        '/etc/ssl/certs/ca-certificates.crt',
+    ]
+
+    for f in CA_CERTS:
+        if os.path.exists(f):
+            return f
+    return None
 
 
 class HTTPCheck(NetworkCheck):
     SOURCE_TYPE_NAME = 'system'
+    SC_STATUS = 'http_check'
+    SC_SSL_CERT = 'http_check.ssl_cert'
 
     def __init__(self, name, init_config, agentConfig, instances):
-        if init_config and 'ca_certs' in init_config:
-            self.ca_certs = init_config['ca_certs']
-        else:
-            self.ca_certs = LINUX_CA_CERTS
+        self.ca_certs = init_config.get('ca_certs', get_ca_certs_path())
         NetworkCheck.__init__(self, name, init_config, agentConfig, instances)
 
     def _load_conf(self, instance):
@@ -66,7 +79,7 @@ class HTTPCheck(NetworkCheck):
             length = int((time.time() - start) * 1000)
             self.log.info("%s is DOWN, error: %s. Connection failed after %s ms" % (addr, str(e), length))
             service_checks.append((
-                'http_check',
+                self.SC_STATUS,
                 Status.DOWN,
                 "%s. Connection failed after %s ms" % (str(e), length)
             ))
@@ -75,7 +88,7 @@ class HTTPCheck(NetworkCheck):
             length = int((time.time() - start) * 1000)
             self.log.info("%s is DOWN, error: %s. Connection failed after %s ms" % (addr, str(e), length))
             service_checks.append((
-                'http_check',
+                self.SC_STATUS,
                 Status.DOWN,
                 "%s. Connection failed after %s ms" % (str(e), length)
             ))
@@ -84,7 +97,7 @@ class HTTPCheck(NetworkCheck):
             length = int((time.time() - start) * 1000)
             self.log.info("%s is DOWN, error: %s. Connection failed after %s ms" % (addr, repr(e), length))
             service_checks.append((
-                'http_check',
+                self.SC_STATUS,
                 Status.DOWN,
                 "Socket error: %s. Connection failed after %s ms" % (repr(e), length)
             ))
@@ -99,8 +112,7 @@ class HTTPCheck(NetworkCheck):
             # Stop the timer as early as possible
             running_time = time.time() - start
             # Store tags in a temporary list so that we don't modify the global tags data structure
-            tags_list = []
-            tags_list.extend(tags)
+            tags_list = list(tags)
             tags_list.append('url:%s' % addr)
             self.gauge('network.http.response_time', running_time, tags=tags_list)
 
@@ -110,18 +122,18 @@ class HTTPCheck(NetworkCheck):
                 if not include_content:
                     content = ''
                 service_checks.append((
-                    'http_check', Status.DOWN, (resp.status, resp.reason, content or '')
+                    self.SC_STATUS, Status.DOWN, (resp.status, resp.reason, content or '')
                 ))
             else:
                 self.log.debug("%s is UP" % addr)
                 service_checks.append((
-                    "http_check", Status.UP, "UP"
+                    self.SC_STATUS, Status.UP, "UP"
                 ))
 
         if ssl_expire:
             status, msg = self.check_cert_expiration(instance)
             service_checks.append((
-                'http_check.ssl_cert', status, msg
+                self.SC_SSL_CERT, status, msg
             ))
 
         return service_checks
@@ -129,7 +141,7 @@ class HTTPCheck(NetworkCheck):
     # FIXME: 5.3 drop this function
     def _create_status_event(self, sc_name, status, msg, instance):
         # Create only this deprecated event for old check
-        if sc_name != 'http_check':
+        if sc_name != self.SC_STATUS:
             return
         # Get the instance settings
         url = instance.get('url', None)
@@ -206,7 +218,7 @@ class HTTPCheck(NetworkCheck):
         url = instance.get('url', None)
         sc_tags = ['url:%s' % url]
 
-        if sc_name == 'http_check':
+        if sc_name == self.SC_STATUS:
             # format the HTTP response body into the event
             if isinstance(msg, tuple):
                 code, reason, content = msg
@@ -225,16 +237,13 @@ class HTTPCheck(NetworkCheck):
                            )
 
     def check_cert_expiration(self, instance):
-        warning_days = instance.get('days_warning', 14)
-        url = instance.get('url', None)
+        warning_days = int(instance.get('days_warning', 14))
+        url = instance.get('url')
 
         o = urlparse(url)
         host = o.netloc
 
-        if o.port:
-            port = o.port
-        else:
-            port = 443
+        port = o.port or 443
 
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

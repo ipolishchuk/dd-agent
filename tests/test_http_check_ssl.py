@@ -33,6 +33,13 @@ class HttpSslTestCase(unittest.TestCase):
             'check_certificate_expiration': True,
             'days_warning': 14
             },
+            {
+            'name' : 'Mon ECP',
+            'url' : 'https://my.ecp.fr',
+            'timeout' : 1,
+            'check_certificate_expiration': True,
+            'days_warning': 14
+            },
             ]
         }
 
@@ -61,7 +68,12 @@ class HttpSslTestCase(unittest.TestCase):
         service = self.check.get_service_checks()
         self.assertEqual(service[1].get('status'), AgentCheck.CRITICAL)
 
-
+        # Always OK because VIA rocks?
+        self.check.check(config['instances'][3])
+        time.sleep(2)
+        self.check._process_results()
+        service = self.check.get_service_checks()
+        self.assertEqual(service[1].get('status'), AgentCheck.OK)
 
     fake_cert = {'notAfter': 'Apr 12 12:00:00 2006 GMT'}
     @mock.patch('ssl.SSLSocket.getpeercert', return_value=fake_cert)
