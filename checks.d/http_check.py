@@ -8,6 +8,7 @@ from urlparse import urlparse
 
 # 3rd party
 from httplib2 import Http, HttpLib2Error
+import tornado
 
 # project
 from checks.network_checks import NetworkCheck, Status, EventType
@@ -20,7 +21,7 @@ def get_ca_certs_path():
     """
     CA_CERTS = [
         '/opt/datadog-agent/embedded/ssl/certs/cacert.pem',
-        '/opt/datadog-agent/embedded/lib/python2.7/site-packages/tornado/ca-certificates.crt',
+        os.path.join(os.path.dirname(tornado.__file__), 'ca-certificates.crt'),
         '/etc/ssl/certs/ca-certificates.crt',
     ]
 
