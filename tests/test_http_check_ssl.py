@@ -4,10 +4,22 @@ from checks import AgentCheck
 import time
 import mock
 
+RESULTS_TIMEOUT = 5
+
 class HttpSslTestCase(unittest.TestCase):
 
     def tearDown(self):
         self.check.stop()
+
+    def wait_for_async_service_checks(self, count):
+        i = 0
+        while i < RESULTS_TIMEOUT:
+            self.check._process_results()
+            if len(self.check.service_checks) >= count:
+                return self.check.get_service_checks()
+            time.sleep(1)
+            i += 1
+        raise Exception("Didn't get the right count of service checks in time")
 
     def test_http_ssl(self):
 
@@ -44,36 +56,32 @@ class HttpSslTestCase(unittest.TestCase):
         }
 
         # Needed for the HTTP headers
-        agentConfig = {'version' : '5.1'}
+        agentConfig = {'version': '5.1'}
         self.check = load_check('http_check', config, agentConfig)
 
-        #OK Status
+        # OK Status
         self.check.check(config['instances'][0])
-        time.sleep(2)
-        self.check._process_results()
-        service = self.check.get_service_checks()
-        self.assertEqual(service[1].get('status'), AgentCheck.OK)
+        # status and ssl_cert
+        sc = self.wait_for_async_service_checks(2)
+        self.assertEqual(sc[1].get('status'), AgentCheck.OK)
 
-        #Warning Status due to close to expiration date
+        # Warning Status due to close to expiration date
         self.check.check(config['instances'][1])
-        time.sleep(2)
-        self.check._process_results()
-        service = self.check.get_service_checks()
-        self.assertEqual(service[1].get('status'), AgentCheck.WARNING)
+        # status and ssl_cert
+        sc = self.wait_for_async_service_checks(2)
+        self.assertEqual(sc[1].get('status'), AgentCheck.WARNING)
 
-        #Warning Status due to bad link
+        # Warning Status due to bad link
         self.check.check(config['instances'][2])
-        time.sleep(2)
-        self.check._process_results()
-        service = self.check.get_service_checks()
-        self.assertEqual(service[1].get('status'), AgentCheck.CRITICAL)
+        # status and ssl_cert
+        sc = self.wait_for_async_service_checks(2)
+        self.assertEqual(sc[1].get('status'), AgentCheck.CRITICAL)
 
         # should fail because using CACert which is not trusted
         self.check.check(config['instances'][3])
-        time.sleep(2)
-        self.check._process_results()
-        service = self.check.get_service_checks()
-        self.assertEqual(service[1].get('status'), AgentCheck.CRITICAL)
+        # status and ssl_cert
+        sc = self.wait_for_async_service_checks(2)
+        self.assertEqual(sc[1].get('status'), AgentCheck.CRITICAL)
 
     fake_cert = {'notAfter': 'Apr 12 12:00:00 2006 GMT'}
     @mock.patch('ssl.SSLSocket.getpeercert', return_value=fake_cert)
