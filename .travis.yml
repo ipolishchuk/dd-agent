@@ -2,7 +2,8 @@ sudo: false
 
 cache:
   directories:
-    - $HOME/.pip-cache
+    - $HOME/.pip-cache-2.6
+    - $HOME/.pip-cache-2.7
 
 language: python
 python:
