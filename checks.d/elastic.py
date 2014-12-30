@@ -20,7 +20,7 @@ class NodeNotFound(Exception): pass
 class ElasticSearch(AgentCheck):
     SERVICE_CHECK_CONNECT_NAME = 'elasticsearch.can_connect'
     SERVICE_CHECK_CLUSTER_STATUS = 'elasticsearch.cluster_health'
-    
+
     METRICS = { # Metrics that are common to all Elasticsearch versions
         "elasticsearch.docs.count": ("gauge", "indices.docs.count"),
         "elasticsearch.docs.deleted": ("gauge", "indices.docs.deleted"),
@@ -247,7 +247,7 @@ class ElasticSearch(AgentCheck):
         except urllib2.URLError as e:
             if send_service_check:
                 self.service_check(self.SERVICE_CHECK_CONNECT_NAME, AgentCheck.CRITICAL,
-                tags=service_check_tags, message=e.reason)
+                tags=service_check_tags, message=str(e.reason))
             raise
         except Exception as e:
             if send_service_check:
@@ -394,7 +394,7 @@ class ElasticSearch(AgentCheck):
         else:
             status = AgentCheck.CRITICAL
             tag = "ALERT"
-        
+
         msg = "{0} on cluster \"{1}\" | active_shards={2} | initializing_shards={3} | relocating_shards={4} | unassigned_shards={5} | timed_out={6}" \
                     .format(tag, data["cluster_name"],
                                  data["active_shards"],

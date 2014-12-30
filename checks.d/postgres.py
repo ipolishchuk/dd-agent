@@ -181,7 +181,7 @@ WITH max_con AS (SELECT setting::float FROM pg_settings WHERE name = 'max_connec
 SELECT %s
   FROM pg_stat_database, max_con
 """
-    }        
+    }
 
     def __init__(self, name, init_config, agentConfig):
         AgentCheck.__init__(self, name, init_config, agentConfig)
