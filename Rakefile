@@ -9,6 +9,7 @@ require './ci/cassandra'
 require './ci/couchdb'
 require './ci/default'
 require './ci/elasticsearch'
+require './ci/etcd'
 require './ci/fluentd'
 require './ci/gearman'
 require './ci/haproxy'
@@ -17,11 +18,14 @@ require './ci/memcache'
 require './ci/mongo'
 require './ci/mysql'
 require './ci/nginx'
+require './ci/pgbouncer'
 require './ci/postgres'
+require './ci/rabbitmq'
 require './ci/redis'
 require './ci/snmpd'
 require './ci/sysstat'
 require './ci/ssh'
+require './ci/supervisord'
 require './ci/tomcat'
 
 CLOBBER.include '**/*.pyc'
@@ -34,7 +38,8 @@ unless ENV['IS_TRAVIS']
   ENV['INTEGRATIONS_DIR'] = File.join(rakefile_dir, 'embedded')
   ENV['PIP_CACHE'] = File.join(rakefile_dir, '.pip-cache')
   ENV['VOLATILE_DIR'] = '/tmp/dd-agent-testing'
-  ENV['CONCURRENCY'] = ENV['CONCURRENCY'] || '2' 
+  ENV['CONCURRENCY'] = ENV['CONCURRENCY'] || '2'
+  ENV['NOSE_FILTER'] = 'not windows'
 end
 
 desc 'Setup a development environment for the Agent'
@@ -74,7 +79,7 @@ end
 
 desc "Lint the code through pylint"
 task "lint" do
-  sh %{find . -name '*.py' -type f -not -path '*venv*' | xargs --max-procs=$CONCURRENCY -n 1 pylint --rcfile=./.pylintrc}
+  sh %{find . -name '*.py' -type f -not -path '*venv*' -not -path '*embedded*' -exec pylint --rcfile=./.pylintrc {} \\;}
 end
 
 desc "Run the Agent locally"
