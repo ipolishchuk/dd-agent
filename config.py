@@ -28,7 +28,7 @@ from migration import migrate_old_style_configuration
 import yaml
 
 # CONSTANTS
-AGENT_VERSION = "5.2.1"
+AGENT_VERSION = "5.3.0"
 DATADOG_CONF = "datadog.conf"
 DEFAULT_CHECK_FREQUENCY = 15   # seconds
 LOGGING_MAX_BYTES = 5 * 1024 * 1024
@@ -56,6 +56,8 @@ NAGIOS_OLD_CONF_KEYS = [
     'nagios_log',
     'nagios_perf_cfg'
     ]
+
+DEFAULT_CHECKS = ("network", "ntp")
 
 class PathNotFound(Exception):
     pass
@@ -379,10 +381,10 @@ def get_config(parse_args=True, cfg_path=None, options=None):
 
         # Custom histogram aggregate/percentile metrics
         if config.has_option('Main', 'histogram_aggregates'):
-            agentConfig['histogram_aggregates'] = get_histogram_aggregates(config.get('Main', 'histograms_aggregates'))
+            agentConfig['histogram_aggregates'] = get_histogram_aggregates(config.get('Main', 'histogram_aggregates'))
 
         if config.has_option('Main', 'histogram_percentiles'):
-            agentConfig['histogram_percentiles'] = get_histogram_percentiles(config.get('Main', 'histograms_percentiles'))
+            agentConfig['histogram_percentiles'] = get_histogram_percentiles(config.get('Main', 'histogram_percentiles'))
 
         # Disable Watchdog (optionally)
         if config.has_option('Main', 'watchdog'):
@@ -605,7 +607,7 @@ def get_proxy(agentConfig, use_system_settings=False):
                 pass
             px = proxy.split(':')
             proxy_settings['host'] = px[0]
-            proxy_settings['port'] = px[1]
+            proxy_settings['port'] = int(px[1])
             proxy_settings['user'] = None
             proxy_settings['password'] = None
             proxy_settings['system_settings'] = True
@@ -781,14 +783,34 @@ def load_check_directory(agentConfig, hostname):
 
         # Let's see if there is a conf.d for this check
         conf_path = os.path.join(confd_path, '%s.yaml' % check_name)
+
+        # Default checks are checks that are enabled by default
+        # They read their config from the "[CHECKNAME].yaml.default" file
+        if check_name in DEFAULT_CHECKS:
+            default_conf_path = os.path.join(confd_path, '%s.yaml.default' % check_name)
+        else:
+            default_conf_path = None
+
+        conf_exists = False
+        
         if os.path.exists(conf_path):
+            conf_exists = True
+
+        elif not conf_exists and default_conf_path is not None:
+            if not os.path.exists(default_conf_path):
+                log.error("Default configuration file {0} is missing".format(default_conf_path))
+                continue
+            conf_path = default_conf_path
+            conf_exists = True
+
+        if conf_exists:
             f = open(conf_path)
             try:
                 check_config = check_yaml(conf_path)
             except Exception, e:
                 log.exception("Unable to parse yaml config in %s" % conf_path)
                 traceback_message = traceback.format_exc()
-                init_failed_checks[check_name] = {'error':e, 'traceback':traceback_message}
+                init_failed_checks[check_name] = {'error':str(e), 'traceback':traceback_message}
                 continue
         else:
             # Compatibility code for the Nagios checks if it's still configured
