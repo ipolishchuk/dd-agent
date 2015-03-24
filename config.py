@@ -17,11 +17,11 @@ import socket
 from socket import gaierror
 from optparse import OptionParser, Values
 from cStringIO import StringIO
+from urlparse import urlparse
 
 # project
 
 from util import get_os, Platform, yLoader
-from jmxfetch import JMXFetch, JMX_COLLECT_COMMAND
 from migration import migrate_old_style_configuration
 
 # 3rd party
@@ -58,6 +58,10 @@ NAGIOS_OLD_CONF_KEYS = [
     ]
 
 DEFAULT_CHECKS = ("network", "ntp")
+LEGACY_DATADOG_URLS = [
+    "app.datadoghq.com",
+    "app.datad0g.com",
+]
 
 class PathNotFound(Exception):
     pass
@@ -93,6 +97,21 @@ def get_parsed_args():
 
 def get_version():
     return AGENT_VERSION
+
+
+# Return url endpoint, here because needs access to version number
+def get_url_endpoint(default_url, endpoint_type='app'):
+    parsed_url = urlparse(default_url)
+    if parsed_url.netloc not in LEGACY_DATADOG_URLS:
+        return default_url
+
+    subdomain = parsed_url.netloc.split(".")[0]
+
+    # Replace https://app.datadoghq.com in https://5-2-0-app.agent.datadoghq.com
+    return default_url.replace(subdomain,
+        "{0}-{1}.agent".format(
+            get_version().replace(".", "-"),
+            endpoint_type))
 
 def skip_leading_wsp(f):
     "Works on a file, returns a file-like object"
@@ -628,7 +647,9 @@ def get_proxy(agentConfig, use_system_settings=False):
     return None
 
 
-def get_confd_path(osname):
+def get_confd_path(osname=None):
+    if not osname:
+        osname = get_os()
     bad_path = ''
     if osname == 'windows':
         try:
@@ -652,7 +673,9 @@ def get_confd_path(osname):
     raise PathNotFound(bad_path)
 
 
-def get_checksd_path(osname):
+def get_checksd_path(osname=None):
+    if not osname:
+        osname = get_os()
     if osname == 'windows':
         return _windows_checksd_path()
     else:
@@ -765,11 +788,6 @@ def load_check_directory(agentConfig, hostname):
     # Migrate datadog.conf integration configurations that are not supported anymore
     migrate_old_style_configuration(agentConfig, confd_path, get_config_path(None, os_name=get_os()))
 
-    # Start JMXFetch if needed
-    JMXFetch.init(confd_path, agentConfig, get_logging_config(), DEFAULT_CHECK_FREQUENCY, JMX_COLLECT_COMMAND)
-
-
-
     # We don't support old style configs anymore
     # So we iterate over the files in the checks.d directory
     # If there is a matching configuration file in the conf.d directory
@@ -792,7 +810,7 @@ def load_check_directory(agentConfig, hostname):
             default_conf_path = None
 
         conf_exists = False
-        
+
         if os.path.exists(conf_path):
             conf_exists = True
 

@@ -1,13 +1,14 @@
 Changes
 =======
 
-# 5.2.2 / Unreleased
+# 5.2.2 / 03-20-2015
 **Linux or Source Install only**
 
 ### Details
-https://github.com/DataDog/dd-agent/compare/5.2.1...5.2.x
+https://github.com/DataDog/dd-agent/compare/5.2.1...5.2.2
 
 ### Changes
+* [SECURITY] The deb and rpm packages now bundle OpenSSL 1.0.1m
 * [BUGFIX] Fix "pidfile /tmp/dd-agent.pid already exists" bug. See [#1435][]
 * [BUGFIX] Fix bundling of rrdtool python binding
 
