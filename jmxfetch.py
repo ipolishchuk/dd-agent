@@ -1,16 +1,15 @@
 # std
-import os
-import logging
 import glob
+import logging
+import os
 import subprocess
-import tempfile
-import time
 import sys
 import signal
+import time
 
 # datadog
 from util import get_os, yLoader, yDumper
-from config import get_config, get_confd_path, get_logging_config, \
+from config import get_config, get_confd_path, get_jmx_status_path, get_logging_config, \
     PathNotFound, DEFAULT_CHECK_FREQUENCY
 
 # 3rd party
@@ -28,7 +27,7 @@ JAVA_LOGGING_LEVEL = {
     logging.WARNING: "WARN",
 }
 
-JMX_FETCH_JAR_NAME = "jmxfetch-0.5.0-jar-with-dependencies.jar"
+JMX_FETCH_JAR_NAME = "jmxfetch-0.5.2-jar-with-dependencies.jar"
 _JVM_DEFAULT_MAX_MEMORY_ALLOCATION = " -Xmx200m"
 _JVM_DEFAULT_INITIAL_MEMORY_ALLOCATION = " -Xms50m"
 JMXFETCH_MAIN_CLASS = "org.datadog.jmxfetch.App"
@@ -69,6 +68,7 @@ class JMXFetch(object):
         self.check_frequency = DEFAULT_CHECK_FREQUENCY
 
         self.jmx_process = None
+        self.jmx_checks = None
 
     def terminate(self):
         self.jmx_process.terminate()
@@ -78,35 +78,63 @@ class JMXFetch(object):
         log.debug("Caught sigterm. Stopping subprocess.")
         self.jmx_process.terminate()
 
-    def initialize(self):
-        # Gracefully exit on sigterm.
-        signal.signal(signal.SIGTERM, self._handle_sigterm)
+    def register_signal_handlers(self):
+        """
+        Enable SIGTERM and SIGINT handlers
+        """
+        try:
+            # Gracefully exit on sigterm
+            signal.signal(signal.SIGTERM, self._handle_sigterm)
 
-        # Handle Keyboard Interrupt
-        signal.signal(signal.SIGINT, self._handle_sigterm)
+            # Handle Keyboard Interrupt
+            signal.signal(signal.SIGINT, self._handle_sigterm)
 
-        self.run()
+        except ValueError:
+            log.exception("Unable to register signal handlers.")
 
-    def run(self, command=None, checks_list=None, reporter=None):
+    def configure(self, check_list=None):
+        """
+        Instantiate JMXFetch parameters.
+        """
+        self.jmx_checks, self.invalid_checks, self.java_bin_path, self.java_options, self.tools_jar_path = \
+            self.get_configuration(check_list)
+
+    def should_run(self):
+        """
+        Should JMXFetch run ?
+        """
+        return self.jmx_checks is not None and self.jmx_checks != []
+
+    def run(self, command=None, check_list=None, reporter=None):
+
+        if check_list or self.jmx_checks is None:
+            # (Re)set/(re)configure JMXFetch parameters when `check_list` is specified or
+            # no configuration was found
+            self.configure(check_list)
+
         try:
             command = command or JMX_COLLECT_COMMAND
-            jmx_checks, invalid_checks, java_bin_path, java_options, tools_jar_path = \
-                self._should_run(checks_list)
-            if len(invalid_checks) > 0:
+
+            if len(self.invalid_checks) > 0:
                 try:
-                    self._write_status_file(invalid_checks)
+                    self._write_status_file(self.invalid_checks)
                 except Exception:
                     log.exception("Error while writing JMX status file")
 
-            if len(jmx_checks) > 0:
-                self._start(
-                    java_bin_path, java_options, jmx_checks, command, reporter, tools_jar_path)
-                return True
+            if len(self.jmx_checks) > 0:
+                return self._start(self.java_bin_path, self.java_options, self.jmx_checks,
+                                   command, reporter, self.tools_jar_path)
+            else:
+                # We're exiting purposefully, so exit with zero (supervisor's expected
+                # code). HACK: Sleep a little bit so supervisor thinks we've started cleanly
+                # and thus can exit cleanly.
+                time.sleep(4)
+                log.info("No valid JMX integration was found. Exiting ...")
         except Exception:
             log.exception("Error while initiating JMXFetch")
             raise
 
-    def _should_run(self, checks_list):
+    def get_configuration(self, checks_list=None):
         """
         Return a tuple (jmx_checks, invalid_checks, java_bin_path, java_options)
 
@@ -164,13 +192,14 @@ class JMXFetch(object):
                         if tools_jar_path is None and check_tools_jar_path is not None:
                             tools_jar_path = check_tools_jar_path
                 except InvalidJMXConfiguration, e:
-                    log.error("%s check is not a valid jmx configuration: %s" % (check_name, e))
-                    invalid_checks[check_name] = e
+                    log.error("%s check does not have a valid JMX configuration: %s" % (check_name, e))
+                    # Make sure check_name is a string - Fix issues with Windows
+                    check_name = check_name.encode('ascii', 'ignore')
+                    invalid_checks[check_name] = str(e)
 
         return (jmx_checks, invalid_checks, java_bin_path, java_options, tools_jar_path)
 
     def _start(self, path_to_java, java_run_opts, jmx_checks, command, reporter, tools_jar_path):
-
         statsd_port = self.agentConfig.get('dogstatsd_port', "8125")
         if reporter is None:
             reporter = "statsd:%s" % str(statsd_port)
@@ -180,7 +209,7 @@ class JMXFetch(object):
             path_to_java = path_to_java or "java"
             java_run_opts = java_run_opts or ""
             path_to_jmxfetch = self._get_path_to_jmxfetch()
-            path_to_status_file = os.path.join(tempfile.gettempdir(), "jmx_status.yaml")
+            path_to_status_file = os.path.join(get_jmx_status_path(), "jmx_status.yaml")
 
             if tools_jar_path is None:
                 classpath = path_to_jmxfetch
@@ -218,12 +247,24 @@ class JMXFetch(object):
             log.info("Running %s" % " ".join(subprocess_args))
             jmx_process = subprocess.Popen(subprocess_args, close_fds=True)
             self.jmx_process = jmx_process
+            
+            # Register SIGINT and SIGTERM signal handlers
+            self.register_signal_handlers()
+
+            # Wait for JMXFetch to return
             jmx_process.wait()
 
             return jmx_process.returncode
 
         except OSError:
-            log.exception("Couldn't launch JMXTerm. Is java in your PATH?")
+            java_path_msg = "Couldn't launch JMXTerm. Is Java in your PATH ?"
+            log.exception(java_path_msg)
+            invalid_checks = {}
+            for check in jmx_checks:
+                check_name = check.split('.')[0]
+                check_name = check_name.encode('ascii', 'ignore')
+                invalid_checks[check_name] = java_path_msg
+            self._write_status_file(invalid_checks)
             raise
         except Exception:
             log.exception("Couldn't launch JMXFetch")
@@ -234,7 +275,7 @@ class JMXFetch(object):
             'timestamp': time.time(),
             'invalid_checks': invalid_checks
         }
-        stream = file(os.path.join(tempfile.gettempdir(), PYTHON_JMX_STATUS_FILE), 'w')
+        stream = file(os.path.join(get_jmx_status_path(), PYTHON_JMX_STATUS_FILE), 'w')
         yaml.dump(data, stream, Dumper=yDumper)
         stream.close()
 
@@ -360,9 +401,7 @@ def main(config_path=None):
     confd_path, agentConfig = init(config_path)
 
     jmx = JMXFetch(confd_path, agentConfig)
-    jmx.initialize()
-
-    return 0
+    return jmx.run()
 
 if __name__ == '__main__':
     sys.exit(main())

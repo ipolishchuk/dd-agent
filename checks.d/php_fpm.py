@@ -22,18 +22,16 @@ class PHPFPMCheck(AgentCheck):
         'total processes': 'php_fpm.processes.total',
     }
 
-    RATES = {
-        'max children reached': 'php_fpm.processes.max_reached'
-    }
-
-    COUNTERS = {
+    MONOTONIC_COUNTS = {
         'accepted conn': 'php_fpm.requests.accepted',
-        'slow requests': 'php_fpm.requests.slow'
+        'max children reached': 'php_fpm.processes.max_reached',
+        'slow requests': 'php_fpm.requests.slow',
     }
 
     def check(self, instance):
         status_url = instance.get('status_url')
         ping_url = instance.get('ping_url')
+        ping_reply = instance.get('ping_reply')
 
         auth = None
         user = instance.get('user')
@@ -57,10 +55,11 @@ class PHPFPMCheck(AgentCheck):
                 pass
 
         if ping_url is not None:
-            self._process_ping(ping_url, auth, tags, pool)
+            self._process_ping(ping_url, ping_reply, auth, tags, pool)
 
+        # pylint doesn't understand that we are raising this only if it's here
         if status_exception is not None:
-            raise status_exception
+            raise status_exception  # pylint: disable=E0702
 
     def _process_status(self, status_url, auth, tags):
         data = {}
@@ -86,25 +85,20 @@ class PHPFPMCheck(AgentCheck):
                 continue
             self.gauge(mname, int(data[key]), tags=metric_tags)
 
-        for key, mname in self.RATES.iteritems():
-            if key not in data:
-                self.log.warn("Rate metric {0} is missing from FPM status".format(key))
-                continue
-            self.rate(mname, int(data[key]), tags=metric_tags)
-
-        for key, mname in self.COUNTERS.iteritems():
+        for key, mname in self.MONOTONIC_COUNTS.iteritems():
             if key not in data:
                 self.log.warn("Counter metric {0} is missing from FPM status".format(key))
                 continue
-            self.increment(mname, int(data[key]), tags=metric_tags)
+            self.monotonic_count(mname, int(data[key]), tags=metric_tags)
 
         # return pool, to tag the service check with it if we have one
         return pool_name
 
-    def _process_ping(self, ping_url, auth, tags, pool_name):
-        sc_tags = tags[:]
-        if pool_name is not None:
-            sc_tags.append("pool:{0}".format(pool_name))
+    def _process_ping(self, ping_url, ping_reply, auth, tags, pool_name):
+        if ping_reply is None:
+            ping_reply = 'pong'
+
+        sc_tags = ["ping_url:{0}".format(ping_url)]
 
         try:
             # TODO: adding the 'full' parameter gets you per-process detailed
@@ -113,7 +107,7 @@ class PHPFPMCheck(AgentCheck):
                                 headers=headers(self.agentConfig))
             resp.raise_for_status()
 
-            if 'pong' not in resp.text:
+            if ping_reply not in resp.text:
                 raise Exception("Received unexpected reply to ping {0}".format(resp.text))
 
         except Exception as e:

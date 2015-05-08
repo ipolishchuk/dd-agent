@@ -35,14 +35,18 @@ PROCESS_TAG = 'supervisord_process'
 
 FORMAT_TIME = lambda x: time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(x))
 
+SERVER_SERVICE_CHECK = 'supervisord.can_connect'
+PROCESS_SERVICE_CHECK = 'supervisord.process.status'
+
 class SupervisordCheck(AgentCheck):
 
     def check(self, instance):
         server_name = instance.get('name')
 
         if not server_name or not server_name.strip():
-            raise Exception("Supervisord server name not specified in yaml configuration.")
+            raise Exception("Supervisor server name not specified in yaml configuration.")
 
+        server_service_check_tags = ['%s:%s' % (SERVER_TAG, server_name)]
         supe = self._connect(instance)
         count_by_status = defaultdict(int)
 
@@ -71,26 +75,34 @@ class SupervisordCheck(AgentCheck):
             sock = instance.get('socket')
             if sock is None:
                 msg = 'Cannot connect to http://%s:%s. ' \
-                    'Make sure supervisor is running and XML-RPC ' \
+                    'Make sure that supervisor is running and XML-RPC ' \
                     'inet interface is enabled.' % (host, port)
             else:
-                msg = 'Cannot connect to %s. Make sure sure supervisor ' \
-                    'is running and socket is enabled and socket file' \
+                msg = 'Cannot connect to %s. Make sure that supervisor ' \
+                    'is running and that the socket file' \
                     ' has the right permissions.' % sock
 
-            if e.errno not in [errno.EACCES, errno.ENOENT]: # permissions denied, no such file
-                self.service_check('supervisord.server.check', AgentCheck.CRITICAL,
-                                   tags=['%s:%s' % (SERVER_TAG, server_name)],
-                                   message='Supervisord server %s is down.' % server_name)
+            self.service_check(SERVER_SERVICE_CHECK, AgentCheck.CRITICAL,
+                               tags=server_service_check_tags,
+                               message=msg)
 
             raise Exception(msg)
         except xmlrpclib.ProtocolError, e:
             if e.errcode == 401: # authorization error
-                raise Exception('Username or password to %s are incorrect.' %
-                                server_name)
+                msg = 'Username or password to %s are incorrect.' % server_name
             else:
-                raise Exception('An error occurred while connecting to %s: '
-                                '%s %s ' % (server_name, e.errcode, e.errmsg))
+                msg = "An error occurred while connecting to %s: "\
+                    "%s %s " % (server_name, e.errcode, e.errmsg)
+
+            self.service_check(SERVER_SERVICE_CHECK, AgentCheck.CRITICAL,
+                               tags=server_service_check_tags,
+                               message=msg)
+            raise Exception(msg)
+
+
+        # If we're here, we were able to connect to the server
+        self.service_check(SERVER_SERVICE_CHECK, AgentCheck.OK,
+            tags=server_service_check_tags)
 
         # Report service checks and uptime for each process
         for proc in processes:
@@ -102,7 +114,7 @@ class SupervisordCheck(AgentCheck):
             status = DD_STATUS[proc['statename']]
             msg = self._build_message(proc)
             count_by_status[status] += 1
-            self.service_check('supervisord.process.check',
+            self.service_check(PROCESS_SERVICE_CHECK,
                                status, tags=tags, message=msg)
             # Report Uptime
             uptime = self._extract_uptime(proc)

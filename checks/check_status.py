@@ -18,7 +18,7 @@ import os.path
 
 # project
 import config
-from config import _windows_commondata_path, get_config
+from config import get_config, get_jmx_status_path, _windows_commondata_path
 from util import get_os, plural, Platform
 
 # 3rd party
@@ -517,7 +517,8 @@ class CollectorStatus(AgentStatus):
             status_info['checks'][cs.name] = {'instances': {}}
             if cs.init_failed_error:
                 status_info['checks'][cs.name]['init_failed'] = True
-                status_info['checks'][cs.name]['traceback'] = cs.init_failed_traceback
+                status_info['checks'][cs.name]['traceback'] = \
+                    cs.init_failed_traceback or cs.init_failed_error
             else:
                 status_info['checks'][cs.name] = {'instances': {}}
                 status_info['checks'][cs.name]['init_failed'] = False
@@ -675,6 +676,7 @@ class ForwarderStatus(AgentStatus):
         })
         return status_info
 
+
 def get_jmx_instance_status(instance_name, status, message, metric_count):
     if status == STATUS_ERROR:
         instance_status = InstanceStatus(instance_name, STATUS_ERROR, error=message, metric_count=metric_count)
@@ -719,8 +721,8 @@ def get_jmx_status():
         ###
     """
     check_statuses = []
-    java_status_path = os.path.join(tempfile.gettempdir(), "jmx_status.yaml")
-    python_status_path = os.path.join(tempfile.gettempdir(), "jmx_status_python.yaml")
+    java_status_path = os.path.join(get_jmx_status_path(), "jmx_status.yaml")
+    python_status_path = os.path.join(get_jmx_status_path(), "jmx_status_python.yaml")
     if not os.path.exists(java_status_path) and not os.path.exists(python_status_path):
         log.debug("There is no jmx_status file at: %s or at: %s" % (java_status_path, python_status_path))
         return []

@@ -1,4 +1,5 @@
 import atexit
+import cStringIO as StringIO
 import glob
 import logging
 import os.path
@@ -28,7 +29,8 @@ from util import (
 import requests
 
 # Globals
-log = logging.getLogger('flare')
+log = logging.getLogger(__name__)
+
 
 def configcheck():
     all_valid = True
@@ -46,9 +48,10 @@ def configcheck():
         return 0
     else:
         print("Fix the invalid yaml files above in order to start the Datadog agent. "
-                "A useful external tool for yaml parsing can be found at "
-                "http://yaml-online-parser.appspot.com/")
+              "A useful external tool for yaml parsing can be found at "
+              "http://yaml-online-parser.appspot.com/")
         return 1
+
 
 class Flare(object):
     """
@@ -62,10 +65,9 @@ class Flare(object):
     APIKEY_REGEX = re.compile('^api_key: *\w+(\w{5})$')
     REPLACE_APIKEY = r'api_key: *************************\1'
     COMPRESSED_FILE = 'datadog-agent-{0}.tar.bz2'
-    # We limit to 10MB arbitrary
+    # We limit to 10MB arbitrarily
     MAX_UPLOAD_SIZE = 10485000
-    TIMEOUT = 30
-
+    TIMEOUT = 60
 
     def __init__(self, cmdline=False, case_id=None):
         self._case_id = case_id
@@ -80,6 +82,20 @@ class Flare(object):
         )
         self._hostname = get_hostname(config)
         self._prefix = "datadog-{0}".format(self._hostname)
+
+    # On Unix system, check that the user is root (to call supervisorctl & status)
+    # Otherwise emit a warning, and ask for confirmation
+    @staticmethod
+    def check_user_rights():
+        if Platform.is_unix() and not os.geteuid() == 0:
+            log.warning("You are not root, some information won't be collected")
+            choice = raw_input('Are you sure you want to continue [y/N]? ')
+            if choice.strip().lower() not in ['yes', 'y']:
+                print 'Aborting'
+                sys.exit(1)
+            else:
+                log.warn('Your user has to have at least read access'
+                         ' to the logs and conf files of the agent')
 
     # Collect all conf and logs files and compress them
     def collect(self):
@@ -102,10 +118,10 @@ class Flare(object):
         self._tar.close()
 
     # Upload the tar file
-    def upload(self, confirmation=True):
+    def upload(self):
         self._check_size()
 
-        if confirmation:
+        if self._cmdline:
             self._ask_for_confirmation()
 
         email = self._ask_for_email()
@@ -121,7 +137,8 @@ class Flare(object):
             'hostname': self._hostname,
             'email': email
         }
-        self._resp = requests.post(url, files=files, data=data, timeout=self.TIMEOUT)
+        self._resp = requests.post(url, files=files, data=data,
+                                   timeout=self.TIMEOUT)
         self._analyse_result()
 
     # Start by creating the tar file which will contain everything
@@ -154,39 +171,52 @@ class Flare(object):
         self._add_log_file_tar(self._dogstatsd_log)
         self._add_log_file_tar(self._jmxfetch_log)
         self._add_log_file_tar(
-            "{0}/*supervisord.log*".format(os.path.dirname(self._collector_log))
+            "{0}/*supervisord.log".format(os.path.dirname(self._collector_log))
         )
 
     def _add_log_file_tar(self, file_path):
         for f in glob.glob('{0}*'.format(file_path)):
-            log.info("  * {0}".format(f))
-            self._tar.add(
-                f,
-                os.path.join(self._prefix, 'log', os.path.basename(f))
-            )
+            if self._can_read(f):
+                self._tar.add(
+                    f,
+                    os.path.join(self._prefix, 'log', os.path.basename(f))
+                )
 
     # Collect all conf
     def _add_conf_tar(self):
         conf_path = get_config_path()
-        log.info("  * {0}".format(conf_path))
-        self._tar.add(
-            self._strip_comment(conf_path),
-            os.path.join(self._prefix, 'etc', 'datadog.conf')
-        )
+        if self._can_read(conf_path):
+            self._tar.add(
+                self._strip_comment(conf_path),
+                os.path.join(self._prefix, 'etc', 'datadog.conf')
+            )
 
         if not Platform.is_windows():
             supervisor_path = os.path.join(
                 os.path.dirname(get_config_path()),
                 'supervisor.conf'
             )
-            log.info("  * {0}".format(supervisor_path))
-            self._tar.add(
-                self._strip_comment(supervisor_path),
-                os.path.join(self._prefix, 'etc', 'supervisor.conf')
-            )
+            if self._can_read(supervisor_path):
+                self._tar.add(
+                    self._strip_comment(supervisor_path),
+                    os.path.join(self._prefix, 'etc', 'supervisor.conf')
+                )
 
-        for file_path in glob.glob(os.path.join(get_confd_path(), '*.yaml')):
-            self._add_clean_confd(file_path)
+        for file_path in glob.glob(os.path.join(get_confd_path(), '*.yaml')) +\
+                glob.glob(os.path.join(get_confd_path(), '*.yaml.default')):
+            if self._can_read(file_path, output=False):
+                self._add_clean_confd(file_path)
+
+    # Check if the file is readable (and log it)
+    @classmethod
+    def _can_read(cls, f, output=True):
+        if os.access(f, os.R_OK):
+            if output:
+                log.info("  * {0}".format(f))
+            return True
+        else:
+            log.warn("  * not readable - {0}".format(f))
+            return False
 
     # Return path to a temp file without comment
     def _strip_comment(self, file_path):
@@ -230,16 +260,25 @@ class Flare(object):
 
     # Add output of the command to the tarfile
     def _add_command_output_tar(self, name, command):
-        temp_file = os.path.join(tempfile.gettempdir(), name)
-        if os.path.exists(temp_file):
-            os.remove(temp_file)
-        backup = sys.stdout
-        sys.stdout = open(temp_file, 'w')
+        temp_path = os.path.join(tempfile.gettempdir(), name)
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+        backup_out, backup_err = sys.stdout, sys.stderr
+        backup_handlers = logging.root.handlers[:]
+        out, err = StringIO.StringIO(), StringIO.StringIO()
+        sys.stdout, sys.stderr = out, err
         command()
-        sys.stdout.close()
-        sys.stdout = backup
-        self._tar.add(temp_file, os.path.join(self._prefix, name))
-        os.remove(temp_file)
+        sys.stdout, sys.stderr = backup_out, backup_err
+        logging.root.handlers = backup_handlers
+        with open(temp_path, 'w') as temp_file:
+            temp_file.write(">>>> STDOUT <<<<\n")
+            temp_file.write(out.getvalue())
+            out.close()
+            temp_file.write(">>>> STDERR <<<<\n")
+            temp_file.write(err.getvalue())
+            err.close()
+        self._tar.add(temp_path, os.path.join(self._prefix, name))
+        os.remove(temp_path)
 
     # Print supervisor status (and nothing on windows)
     def _supervisor_status(self):
@@ -277,7 +316,7 @@ class Flare(object):
 
     # Find the supervisor conf (package or source)
     def _get_path_supervisor_conf(self):
-        supervisor_conf = '/etc/init.d/datadog-agent'
+        supervisor_conf = '/etc/dd-agent/supervisor.conf'
         if not os.path.isfile(supervisor_conf):
             supervisor_conf = os.path.join(
                 os.path.dirname(os.path.realpath(__file__)),
@@ -304,29 +343,29 @@ class Flare(object):
     def _pip_freeze(self):
         try:
             import pip
-            pip.main(['freeze'])
+            pip.main(['freeze', '--no-cache-dir'])
         except ImportError:
             print 'Unable to import pip'
 
     # Check if the file is not too big before upload
     def _check_size(self):
         if os.path.getsize(self._tar_path) > self.MAX_UPLOAD_SIZE:
-            log.info('{0} won\'t be uploaded, its size is too important.\n'\
-                      'You can send it directly to support by mail.')
+            log.info("{0} won't be uploaded, its size is too important.\n"
+                     "You can send it directly to support by mail.")
             sys.exit(1)
 
     # Function to ask for confirmation before upload
     def _ask_for_confirmation(self):
         print '{0} is going to be uploaded to Datadog.'.format(self._tar_path)
-        choice = raw_input('Do you want to continue [Y/n]? ').lower()
-        if choice not in ['yes', 'y', '']:
+        choice = raw_input('Do you want to continue [Y/n]? ')
+        if choice.strip().lower() not in ['yes', 'y', '']:
             print 'Aborting (you can still use {0})'.format(self._tar_path)
             sys.exit(1)
 
     # Ask for email if needed
     def _ask_for_email(self):
-        if self._case_id:
-            return ''
+        # We ask everytime now, as it is also the 'id' to check
+        # that the case is the good one if it exists
         return raw_input('Please enter your email: ').lower()
 
     # Print output (success/error) of the request
@@ -339,9 +378,9 @@ class Flare(object):
         try:
             json_resp = self._resp.json()
         # Failed parsing
-        except ValueError, e:
-            raise Exception('An unknown error has occured - '\
+        except ValueError:
+            raise Exception('An unknown error has occured - '
                             'Please contact support by email')
         # Finally, correct
-        log.info("Your logs were successfully uploaded. For future reference,"\
+        log.info("Your logs were successfully uploaded. For future reference,"
                  " your internal case id is {0}".format(json_resp['case_id']))

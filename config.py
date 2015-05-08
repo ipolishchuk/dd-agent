@@ -10,6 +10,7 @@ import subprocess
 import sys
 import glob
 import inspect
+import tempfile
 import traceback
 import re
 import imp
@@ -20,15 +21,13 @@ from cStringIO import StringIO
 from urlparse import urlparse
 
 # project
-
 from util import get_os, Platform, yLoader
-from migration import migrate_old_style_configuration
 
 # 3rd party
 import yaml
 
 # CONSTANTS
-AGENT_VERSION = "5.3.0"
+AGENT_VERSION = "5.4.0"
 DATADOG_CONF = "datadog.conf"
 DEFAULT_CHECK_FREQUENCY = 15   # seconds
 LOGGING_MAX_BYTES = 5 * 1024 * 1024
@@ -785,9 +784,6 @@ def load_check_directory(agentConfig, hostname):
         log.error("No conf.d folder found at '%s' or in the directory where the Agent is currently deployed.\n" % e.args[0])
         sys.exit(3)
 
-    # Migrate datadog.conf integration configurations that are not supported anymore
-    migrate_old_style_configuration(agentConfig, confd_path, get_config_path(None, os_name=get_os()))
-
     # We don't support old style configs anymore
     # So we iterate over the files in the checks.d directory
     # If there is a matching configuration file in the conf.d directory
@@ -927,6 +923,7 @@ def load_check_directory(agentConfig, hostname):
 def get_log_date_format():
     return "%Y-%m-%d %H:%M:%S %Z"
 
+
 def get_log_format(logger_name):
     if get_os() != 'windows':
         return '%%(asctime)s | %%(levelname)s | dd.%s | %%(name)s(%%(filename)s:%%(lineno)s) | %%(message)s' % logger_name
@@ -935,6 +932,14 @@ def get_log_format(logger_name):
 
 def get_syslog_format(logger_name):
     return 'dd.%s[%%(process)d]: %%(levelname)s (%%(filename)s:%%(lineno)s): %%(message)s' % logger_name
+
+
+def get_jmx_status_path():
+    if Platform.is_win32():
+        path = os.path.join(_windows_commondata_path(), 'Datadog')
+    else:
+        path = tempfile.gettempdir()
+    return path
 
 
 def get_logging_config(cfg_path=None):

@@ -1,3 +1,3 @@
-# dummy program that runs for 60 seconds and dies
-
-sleep 60
+# dummy program that runs for 30 seconds and dies
+echo 'test' >> $VOLATILE_DIR/supervisor/started_2
+sleep 30

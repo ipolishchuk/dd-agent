@@ -1,11 +1,11 @@
 require './ci/common'
 
 def nginx_version
-  ENV['NGINX_VERSION'] || '1.7.9'
+  ENV['NGINX_VERSION'] || '1.7.11'
 end
 
 def php_version
-  ENV['PHP_VERSION'] || '5.6.6'
+  ENV['PHP_VERSION'] || '5.6.7'
 end
 
 def phpfpm_rootdir
@@ -14,13 +14,16 @@ end
 
 namespace :ci do
   namespace :phpfpm do |flavor|
-    task :before_install => ['ci:common:before_install']
+    task before_install: ['ci:common:before_install']
 
-    task :install => ['ci:common:install'] do
+    task install: ['ci:common:install'] do
+      # Downloads
+      # http://nginx.org/download/nginx-#{nginx_version}.tar.gz
+      # http://us1.php.net/get/php-#{php_version}.tar.bz2/from/this/mirror
       unless Dir.exist? File.expand_path(phpfpm_rootdir)
         sh %(curl -s -L\
              -o $VOLATILE_DIR/nginx-#{nginx_version}.tar.gz\
-             http://nginx.org/download/nginx-#{nginx_version}.tar.gz)
+             https://s3.amazonaws.com/dd-agent-tarball-mirror/nginx-#{nginx_version}.tar.gz)
         sh %(mkdir -p #{phpfpm_rootdir})
         sh %(mkdir -p $VOLATILE_DIR/nginx)
         sh %(tar zxf $VOLATILE_DIR/nginx-#{nginx_version}.tar.gz\
@@ -31,7 +34,7 @@ namespace :ci do
              && make install)
         sh %(curl -s -L\
              -o $VOLATILE_DIR/php-#{php_version}.tar.bz2\
-             http://us1.php.net/get/php-#{php_version}.tar.bz2/from/this/mirror)
+             https://s3.amazonaws.com/dd-agent-tarball-mirror/php-#{php_version}.tar.bz2)
         sh %(mkdir -p $VOLATILE_DIR/php)
         sh %(tar jxf $VOLATILE_DIR/php-#{php_version}.tar.bz2\
              -C $VOLATILE_DIR/php --strip-components=1)
@@ -42,7 +45,7 @@ namespace :ci do
       end
     end
 
-    task :before_script => ['ci:common:before_script'] do
+    task before_script: ['ci:common:before_script'] do
       sh %(cp $TRAVIS_BUILD_DIR/ci/resources/phpfpm/nginx.conf\
            #{phpfpm_rootdir}/conf/nginx.conf)
       sh %(cp $TRAVIS_BUILD_DIR/ci/resources/phpfpm/php-fpm.conf\
@@ -51,14 +54,18 @@ namespace :ci do
       sh %(#{phpfpm_rootdir}/sbin/php-fpm -g #{ENV['VOLATILE_DIR']}/php-fpm.pid)
     end
 
-    task :script => ['ci:common:script'] do
+    task script: ['ci:common:script'] do
       this_provides = [
         'phpfpm'
       ]
       Rake::Task['ci:common:run_tests'].invoke(this_provides)
     end
 
-    task :cleanup => ['ci:common:cleanup'] do
+    task before_cache: ['ci:common:before_cache']
+
+    task cache: ['ci:common:cache']
+
+    task cleanup: ['ci:common:cleanup'] do
       sh %(kill `cat $VOLATILE_DIR/nginx.pid`)
       sh %(kill `cat $VOLATILE_DIR/php-fpm.pid`)
     end
@@ -66,7 +73,8 @@ namespace :ci do
     task :execute do
       exception = nil
       begin
-        %w(before_install install before_script script).each do |t|
+        %w(before_install install before_script
+           script before_cache cache).each do |t|
           Rake::Task["#{flavor.scope.path}:#{t}"].invoke
         end
       rescue => e
